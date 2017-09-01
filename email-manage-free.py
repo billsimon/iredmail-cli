@@ -7,7 +7,7 @@ import MySQLdb
 from prettytable import from_db_cursor
 
 # iRedAdmin location
-iredadmin_install_path = '/usr/share/apache2/iredadmin'
+iredadmin_install_path = '/opt/www/iredadmin'
 # Add to path list
 sys.path.append(iredadmin_install_path)
 
@@ -64,6 +64,19 @@ def insert_sql_query(dbobject, query):
 
     return True
 
+def insert_multiple_sql_query(dbobject, queries):
+    dbresult = dbobject.cursor()
+    try:
+        for query in queries:
+            dbresult.execute(query)
+        dbobject.commit()
+    except MySQLdb.Error, e:
+        print(e)
+        return False
+
+    return True
+
+
 def search_database(domain,mailbox,search_string):
     """Func for list or search database for domains or mailboxes"""
     # Search for domains
@@ -88,13 +101,13 @@ def search_database(domain,mailbox,search_string):
         print_results(result)
         print "Aliases"
         #sql = "SELECT address, goto, name, domain, case when active then 'yes' else 'no' end as 'Active' FROM alias WHERE address like '%" + search_string + "%'"
-        sql = "SELECT address, REPLACE(goto, ',', ',\n') AS goto, name, domain, case when active then 'yes' else 'no' end as 'Active' FROM alias WHERE address like '%" + search_string + "%'"
+        sql = "SELECT address, forwarding, domain, case when active then 'yes' else 'no' end as 'Active' FROM forwardings WHERE address like '%" + search_string + "%'"
         result = send_sql_query(db_vmail, sql)
         print_results(result)
 
 def action_list_user_aliases(user,inpt):
     """ Func for list aliases which are pointing to user """
-    sql = "SELECT address from alias where goto regexp '^" + user + "|," + user + "';"
+    sql = "SELECT address from forwardings where forwarding regexp '^" + user + "|," + user + "';"
     result = send_sql_query(db_vmail, sql)
     aliases = list(result)
     output = set()
@@ -114,7 +127,7 @@ def check_alias_exist(dbobject):
     """Check if alias exist in database"""
     if iredutils.is_email(dbobject):
     # Check if email exist
-        sql = "SELECT address FROM alias WHERE address = '%s'" % (dbobject)
+        sql = "SELECT address FROM forwardings WHERE address = '%s'" % (dbobject)
     else:
         return False
 
@@ -166,7 +179,7 @@ def delete_object(domain, mailbox):
                     print colors.GREEN + "Mailbox removed successfully" + colors.NOC
                     web_log(mailbox.split('@')[1], 'delete', 'Delete user: %s' % (mailbox))
                     # Now remove aliases
-                    sql = "DELETE FROM alias WHERE address = '%s'" % (mailbox)
+                    sql = "DELETE FROM forwardings WHERE address = '%s'" % (mailbox)
                     if insert_sql_query(db_vmail,sql):
                         print colors.GREEN + "Alias removed successfully" + colors.NOC
                     else:
@@ -284,7 +297,7 @@ def add_object(domain, mailbox):
             print "Username: %s\nPassword: %s\nDomain: %s" % (username, random_string, domain)
             web_log(domain, 'create', 'Create user %s' % (mailbox))
             # Create initial alias
-            sql = "INSERT INTO alias (address, goto, domain, islist) VALUES ('%s', '%s', '%s', 0)" % (username, username, domain)
+            sql = "INSERT INTO forwardings (address, forwarding, domain, is_forwarding) VALUES ('%s', '%s', '%s', 1)" % (username, username, domain)
             if insert_sql_query(db_vmail, sql):
                 print "Initial alias added"
             else: 
@@ -308,17 +321,23 @@ def action_add_alias(address, send_to):
 
     if iredutils.is_domain(domain):
         if check_object_exist(domain):
+            sql = []
             if check_alias_exist(address):
                 search_database(False,False,address)
                 ans = raw_input('Would you like to update alias ? (y/n) [n]: ')
                 if ans.lower() == "y":
-                    sql = "UPDATE alias SET goto = '%s' WHERE address = '%s' AND domain = '%s'" % (send_to, address, domain)
+                    sql.append("DELETE FROM forwardings WHERE address = '%s'; " % (address))
+                    forwardings = send_to.split(',')
+                    for forwarding in forwardings:
+                        sql.append("INSERT INTO forwardings (address, forwarding, domain, is_forwarding) VALUES ('%s', '%s', '%s', 1); " % (address, forwarding, domain))
                 else:
                     exit_script("Exiting", 0)
             else:
-                sql = "INSERT INTO alias (address, goto, domain, islist) VALUES ('%s', '%s', '%s', 1)" % (address, send_to, domain)
+                forwardings = send_to.split(',')
+                for forwarding in forwardings:
+                    sql.append("INSERT INTO forwardings (address, forwarding, domain, is_list) VALUES ('%s', '%s', '%s', 1); " % (address, forwarding, domain))
 
-            if insert_sql_query(db_vmail,sql):
+            if insert_multiple_sql_query(db_vmail,sql):
                 exit_script("Alias updated/added successfully", 0)
             else:
                 exit_script("Alias not updated/added", 1)
@@ -326,7 +345,6 @@ def action_add_alias(address, send_to):
             exit_script("Domain not exist", 1)
     else:
         exit_script("Invalid domain name", 1)
-
 
 def action_changepass(mailbox, pass_from_prompt):
     """Changing password for mailbox account"""
